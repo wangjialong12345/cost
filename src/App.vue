@@ -2,13 +2,17 @@
 import { computed, onMounted, ref } from 'vue'
 
 const endpoint = import.meta.env.VITE_KEYS_ENDPOINT || '/api/v1/keys'
+const usageEndpoint =
+  import.meta.env.VITE_USAGE_ENDPOINT || '/api/v1/usage/dashboard/api-keys-usage'
 const token =
   'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjoxODAsImVtYWlsIjoiMTQ1Njc5OTM3OUBxcS5jb20iLCJyb2xlIjoidXNlciIsInRva2VuX3ZlcnNpb24iOjAsImV4cCI6MTc3Mjg2ODY3OSwibmJmIjoxNzcyNzgyMjc5LCJpYXQiOjE3NzI3ODIyNzl9.80IQGkAKFIGo0vfGqYJ5dz5oHjFTGbqhUwD6aFdMb0o'
 
 const loading = ref(false)
+const usageLoading = ref(false)
 const errorMessage = ref('')
 const items = ref([])
 const selectedKeyId = ref('')
+const usageStatsMap = ref({})
 
 const nameOptions = computed(() =>
   items.value.map((item) => ({
@@ -16,6 +20,63 @@ const nameOptions = computed(() =>
     name: item.name || `未命名-${item.id}`,
   })),
 )
+
+const selectedKey = computed(() =>
+  items.value.find((item) => String(item.id) === selectedKeyId.value),
+)
+
+const selectedUsage = computed(() => usageStatsMap.value[selectedKeyId.value] || null)
+const quotaDisplay = computed(() => {
+  const quota = Number(selectedKey.value?.quota ?? 0)
+  return quota === 0 ? '无限限制额度' : formatAmount(quota)
+})
+
+const numberFormatter = new Intl.NumberFormat('zh-CN', {
+  minimumFractionDigits: 0,
+  maximumFractionDigits: 6,
+})
+
+const formatAmount = (value) => numberFormatter.format(Number(value || 0))
+
+const fetchUsageStats = async (apiKeyIds) => {
+  if (!apiKeyIds.length) {
+    usageStatsMap.value = {}
+    return
+  }
+
+  usageLoading.value = true
+
+  try {
+    const response = await fetch(usageEndpoint, {
+      method: 'POST',
+      headers: {
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        api_key_ids: apiKeyIds,
+      }),
+    })
+
+    if (!response.ok) {
+      throw new Error(`统计请求失败，状态码 ${response.status}`)
+    }
+
+    const payload = await response.json()
+    const stats = payload?.data?.stats
+
+    if (payload?.code !== 0 || !stats || typeof stats !== 'object') {
+      throw new Error(payload?.message || '统计接口返回格式不符合预期')
+    }
+
+    usageStatsMap.value = stats
+  } catch (error) {
+    errorMessage.value = error instanceof Error ? error.message : '统计请求失败'
+  } finally {
+    usageLoading.value = false
+  }
+}
 
 const fetchKeyOptions = async () => {
   loading.value = true
@@ -54,6 +115,9 @@ const fetchKeyOptions = async () => {
 
     items.value = fetchedItems
     selectedKeyId.value = fetchedItems[0]?.id ? String(fetchedItems[0].id) : ''
+
+    const apiKeyIds = fetchedItems.map((item) => item.id).filter((id) => Number.isFinite(id))
+    await fetchUsageStats(apiKeyIds)
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : '请求失败'
   } finally {
@@ -84,6 +148,25 @@ onMounted(() => {
     </div>
 
     <p v-if="errorMessage" class="error">{{ errorMessage }}</p>
+
+    <div v-else class="stats">
+      <div class="stat-item">
+        <span class="stat-label">今日消费</span>
+        <strong class="stat-value">
+          {{ usageLoading ? '加载中...' : formatAmount(selectedUsage?.today_actual_cost) }}
+        </strong>
+      </div>
+      <div class="stat-item">
+        <span class="stat-label">总消费</span>
+        <strong class="stat-value">
+          {{ usageLoading ? '加载中...' : formatAmount(selectedUsage?.total_actual_cost) }}
+        </strong>
+      </div>
+      <div class="stat-item">
+        <span class="stat-label">最大可消费</span>
+        <strong class="stat-value">{{ quotaDisplay }}</strong>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -141,5 +224,42 @@ button:disabled {
   margin: 12px 0 0;
   color: #b91c1c;
   font-size: 14px;
+}
+
+.stats {
+  margin-top: 16px;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.stat-item {
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  padding: 12px;
+  background: #f8fafc;
+}
+
+.stat-label {
+  display: block;
+  color: #64748b;
+  font-size: 13px;
+  margin-bottom: 6px;
+}
+
+.stat-value {
+  color: #0f172a;
+  font-size: 18px;
+  line-height: 1.2;
+}
+
+@media (max-width: 640px) {
+  .row {
+    grid-template-columns: 1fr;
+  }
+
+  .stats {
+    grid-template-columns: 1fr;
+  }
 }
 </style>
