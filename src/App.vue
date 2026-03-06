@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 
 const keysEndpoint = import.meta.env.VITE_KEYS_ENDPOINT || '/api/v1/keys'
 const usageStatsEndpoint =
@@ -25,6 +25,12 @@ const usageStatsMap = ref({})
 const usageItems = ref([])
 const usageTotal = ref(0)
 const usageEndDate = ref('')
+const activeCostRow = ref(null)
+const costTooltipPosition = ref({ left: 0, top: 0 })
+const activeTokenRow = ref(null)
+const tokenTooltipPosition = ref({ left: 0, top: 0 })
+let hideTooltipTimer = null
+let hideTokenTooltipTimer = null
 
 const numberFormatter = new Intl.NumberFormat('zh-CN', {
   minimumFractionDigits: 0,
@@ -92,6 +98,110 @@ const summaryCards = computed(() => [
   },
   { label: '最大额度', value: quotaDisplay.value },
 ])
+
+const costTooltipStyle = computed(() => ({
+  left: `${costTooltipPosition.value.left}px`,
+  top: `${costTooltipPosition.value.top}px`,
+}))
+
+const tokenTooltipStyle = computed(() => ({
+  left: `${tokenTooltipPosition.value.left}px`,
+  top: `${tokenTooltipPosition.value.top}px`,
+}))
+
+const clearHideTooltipTimer = () => {
+  if (hideTooltipTimer) {
+    clearTimeout(hideTooltipTimer)
+    hideTooltipTimer = null
+  }
+}
+
+const clearTokenHideTooltipTimer = () => {
+  if (hideTokenTooltipTimer) {
+    clearTimeout(hideTokenTooltipTimer)
+    hideTokenTooltipTimer = null
+  }
+}
+
+const updateCostTooltipPosition = (target) => {
+  const rect = target.getBoundingClientRect()
+  const tooltipWidth = 220
+  const gap = 10
+  let left = rect.right + gap
+
+  if (left + tooltipWidth > window.innerWidth - 12) {
+    left = rect.left - tooltipWidth - gap
+  }
+
+  const top = rect.top + rect.height / 2
+  costTooltipPosition.value = {
+    left: Math.max(12, left),
+    top: Math.max(20, Math.min(window.innerHeight - 20, top)),
+  }
+}
+
+const showCostTooltip = (event, row) => {
+  clearHideTooltipTimer()
+  activeTokenRow.value = null
+  activeCostRow.value = row
+  updateCostTooltipPosition(event.currentTarget)
+}
+
+const scheduleHideCostTooltip = () => {
+  clearHideTooltipTimer()
+  hideTooltipTimer = setTimeout(() => {
+    activeCostRow.value = null
+  }, 120)
+}
+
+const keepCostTooltip = () => {
+  clearHideTooltipTimer()
+}
+
+const hideCostTooltip = () => {
+  clearHideTooltipTimer()
+  activeCostRow.value = null
+}
+
+const updateTokenTooltipPosition = (target) => {
+  const rect = target.getBoundingClientRect()
+  const tooltipWidth = 220
+  const gap = 10
+  let left = rect.right + gap
+
+  if (left + tooltipWidth > window.innerWidth - 12) {
+    left = rect.left - tooltipWidth - gap
+  }
+
+  const top = rect.top + rect.height / 2
+  tokenTooltipPosition.value = {
+    left: Math.max(12, left),
+    top: Math.max(20, Math.min(window.innerHeight - 20, top)),
+  }
+}
+
+const showTokenTooltip = (event, row) => {
+  clearTokenHideTooltipTimer()
+  activeCostRow.value = null
+  activeTokenRow.value = row
+  updateTokenTooltipPosition(event.currentTarget)
+}
+
+const scheduleHideTokenTooltip = () => {
+  clearTokenHideTooltipTimer()
+  hideTokenTooltipTimer = setTimeout(() => {
+    activeTokenRow.value = null
+  }, 120)
+}
+
+const keepTokenTooltip = () => {
+  clearTokenHideTooltipTimer()
+}
+
+const hideTokenTooltip = () => {
+  clearTokenHideTooltipTimer()
+  activeTokenRow.value = null
+}
 
 const fetchUsageStats = async (apiKeyIds) => {
   if (!apiKeyIds.length) {
@@ -226,6 +336,11 @@ const handleKeyChange = () => {
 onMounted(() => {
   fetchKeyOptions()
 })
+
+onBeforeUnmount(() => {
+  clearHideTooltipTimer()
+  clearTokenHideTooltipTimer()
+})
 </script>
 
 <template>
@@ -297,50 +412,38 @@ onMounted(() => {
                 <span class="type-tag">{{ formatRequestType(row.request_type) }}</span>
               </td>
               <td>
-                <div class="token-line">
-                  <span class="token-down">↓ {{ row.input_tokens || 0 }}</span>
-                  <span class="token-up">↑ {{ row.output_tokens || 0 }}</span>
-                </div>
-                <div class="token-line token-sub">
-                  <span class="token-read">⟲ {{ formatTokenCount(row.cache_read_tokens) }}</span>
-                  <span class="token-write">✎ {{ formatTokenCount(row.cache_creation_tokens) }}</span>
+                <div
+                  class="token-cell"
+                  tabindex="0"
+                  @mouseenter="showTokenTooltip($event, row)"
+                  @mouseleave="scheduleHideTokenTooltip"
+                  @focusin="showTokenTooltip($event, row)"
+                  @focusout="scheduleHideTokenTooltip"
+                >
+                  <div>
+                    <div class="token-line">
+                      <span class="token-down">↓ {{ row.input_tokens || 0 }}</span>
+                      <span class="token-up">↑ {{ row.output_tokens || 0 }}</span>
+                    </div>
+                    <div class="token-line token-sub">
+                      <span class="token-read">⟲ {{ formatTokenCount(row.cache_read_tokens) }}</span>
+                      <span class="token-write">✎ {{ formatTokenCount(row.cache_creation_tokens) }}</span>
+                    </div>
+                  </div>
+                  <span class="token-info" aria-hidden="true">i</span>
                 </div>
               </td>
               <td>
-                <div class="cost-cell" tabindex="0">
+                <div
+                  class="cost-cell"
+                  tabindex="0"
+                  @mouseenter="showCostTooltip($event, row)"
+                  @mouseleave="scheduleHideCostTooltip"
+                  @focusin="showCostTooltip($event, row)"
+                  @focusout="scheduleHideCostTooltip"
+                >
                   <span class="cost">{{ formatUsd(row.actual_cost) }}</span>
                   <span class="cost-info" aria-hidden="true">i</span>
-                  <div class="cost-tooltip">
-                    <div class="tooltip-title">成本明细</div>
-                    <div class="tooltip-row">
-                      <span>输入成本</span>
-                      <span>{{ formatUsd(row.input_cost) }}</span>
-                    </div>
-                    <div class="tooltip-row">
-                      <span>输出成本</span>
-                      <span>{{ formatUsd(row.output_cost) }}</span>
-                    </div>
-                    <div class="tooltip-row">
-                      <span>缓存创建成本</span>
-                      <span>{{ formatUsd(row.cache_creation_cost) }}</span>
-                    </div>
-                    <div class="tooltip-row">
-                      <span>缓存读取成本</span>
-                      <span>{{ formatUsd(row.cache_read_cost) }}</span>
-                    </div>
-                    <div class="tooltip-row">
-                      <span>倍率</span>
-                      <span>{{ Number(row.rate_multiplier || 1).toFixed(2) }}x</span>
-                    </div>
-                    <div class="tooltip-row">
-                      <span>原始</span>
-                      <span>{{ formatUsd(row.total_cost) }}</span>
-                    </div>
-                    <div class="tooltip-row total">
-                      <span>计费</span>
-                      <span>{{ formatUsd(row.actual_cost) }}</span>
-                    </div>
-                  </div>
                 </div>
               </td>
               <td>{{ formatSeconds(row.first_token_ms) }}</td>
@@ -354,6 +457,83 @@ onMounted(() => {
 
       <p v-if="detailsLoading" class="loading-tip">明细加载中...</p>
     </section>
+
+    <Teleport to="body">
+      <div
+        v-if="activeCostRow"
+        class="cost-tooltip-portal"
+        :style="costTooltipStyle"
+        @mouseenter="keepCostTooltip"
+        @mouseleave="hideCostTooltip"
+      >
+        <div class="tooltip-title">成本明细</div>
+        <div class="tooltip-row">
+          <span>输入成本</span>
+          <span>{{ formatUsd(activeCostRow.input_cost) }}</span>
+        </div>
+        <div class="tooltip-row">
+          <span>输出成本</span>
+          <span>{{ formatUsd(activeCostRow.output_cost) }}</span>
+        </div>
+        <div class="tooltip-row">
+          <span>缓存创建成本</span>
+          <span>{{ formatUsd(activeCostRow.cache_creation_cost) }}</span>
+        </div>
+        <div class="tooltip-row">
+          <span>缓存读取成本</span>
+          <span>{{ formatUsd(activeCostRow.cache_read_cost) }}</span>
+        </div>
+        <div class="tooltip-row">
+          <span>倍率</span>
+          <span>{{ Number(activeCostRow.rate_multiplier || 1).toFixed(2) }}x</span>
+        </div>
+        <div class="tooltip-row">
+          <span>原始</span>
+          <span>{{ formatUsd(activeCostRow.total_cost) }}</span>
+        </div>
+        <div class="tooltip-row total">
+          <span>计费</span>
+          <span>{{ formatUsd(activeCostRow.actual_cost) }}</span>
+        </div>
+      </div>
+    </Teleport>
+
+    <Teleport to="body">
+      <div
+        v-if="activeTokenRow"
+        class="cost-tooltip-portal"
+        :style="tokenTooltipStyle"
+        @mouseenter="keepTokenTooltip"
+        @mouseleave="hideTokenTooltip"
+      >
+        <div class="tooltip-title">Token 明细</div>
+        <div class="tooltip-row">
+          <span>输入 Token</span>
+          <span>{{ Number(activeTokenRow.input_tokens || 0) }}</span>
+        </div>
+        <div class="tooltip-row">
+          <span>输出 Token</span>
+          <span>{{ Number(activeTokenRow.output_tokens || 0) }}</span>
+        </div>
+        <div class="tooltip-row">
+          <span>缓存创建 Token</span>
+          <span>{{ Number(activeTokenRow.cache_creation_tokens || 0) }}</span>
+        </div>
+        <div class="tooltip-row">
+          <span>缓存读取 Token</span>
+          <span>{{ Number(activeTokenRow.cache_read_tokens || 0) }}</span>
+        </div>
+        <div class="tooltip-row total token-total">
+          <span>总 Token</span>
+          <span>{{
+            Number(activeTokenRow.input_tokens || 0) +
+            Number(activeTokenRow.output_tokens || 0) +
+            Number(activeTokenRow.cache_creation_tokens || 0) +
+            Number(activeTokenRow.cache_read_tokens || 0)
+          }}</span>
+        </div>
+      </div>
+    </Teleport>
   </div>
 </template>
 
@@ -514,6 +694,13 @@ td {
   white-space: nowrap;
 }
 
+.token-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  outline: none;
+}
+
 .token-sub {
   margin-top: 4px;
 }
@@ -532,6 +719,18 @@ td {
 
 .token-write {
   color: #ea580c;
+}
+
+.token-info {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 1px solid #cbd5e1;
+  color: #64748b;
+  font-size: 10px;
+  line-height: 12px;
+  text-align: center;
+  display: inline-block;
 }
 
 .cost {
@@ -559,10 +758,8 @@ td {
   display: inline-block;
 }
 
-.cost-tooltip {
-  position: absolute;
-  left: calc(100% + 10px);
-  top: 50%;
+.cost-tooltip-portal {
+  position: fixed;
   transform: translateY(-50%);
   min-width: 190px;
   background: #0f172a;
@@ -571,16 +768,7 @@ td {
   padding: 10px;
   z-index: 20;
   box-shadow: 0 10px 22px rgba(2, 6, 23, 0.35);
-  opacity: 0;
-  visibility: hidden;
-  transition: opacity 0.15s ease;
-}
-
-.cost-cell:hover .cost-tooltip,
-.cost-cell:focus-within .cost-tooltip,
-.cost-cell:focus .cost-tooltip {
-  opacity: 1;
-  visibility: visible;
+  pointer-events: auto;
 }
 
 .tooltip-title {
@@ -605,6 +793,10 @@ td {
   border-top: 1px solid #334155;
   color: #86efac;
   font-weight: 600;
+}
+
+.tooltip-row.total.token-total {
+  color: #60a5fa;
 }
 
 .table-msg {
