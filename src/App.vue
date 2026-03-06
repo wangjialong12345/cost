@@ -13,6 +13,7 @@ const timezone = 'Asia/Shanghai'
 const fixedStartDate = '2026-03-01'
 const fixedDetailsPage = '1'
 const fixedDetailsPageSize = '100'
+const autoRefreshIntervalMs = 30 * 1000
 
 const loading = ref(false)
 const usageLoading = ref(false)
@@ -29,6 +30,9 @@ const activeCostRow = ref(null)
 const costTooltipPosition = ref({ left: 0, top: 0 })
 const activeTokenRow = ref(null)
 const tokenTooltipPosition = ref({ left: 0, top: 0 })
+const statusSyncPendingKeyIds = new Set()
+const overLimitStateByKeyId = new Map()
+let autoRefreshTimer = null
 let hideTooltipTimer = null
 let hideTokenTooltipTimer = null
 
@@ -85,6 +89,14 @@ const selectedUsage = computed(() => usageStatsMap.value[selectedKeyId.value] ||
 const quotaDisplay = computed(() => {
   const quota = Number(selectedKey.value?.quota ?? 0)
   return quota === 0 ? '无限限制额度' : formatAmount(quota)
+})
+
+const selectedKeyStatus = computed(() => {
+  if (!selectedKey.value) return { type: 'unknown', label: '未选择' }
+  const status = String(selectedKey.value?.status || '').toLowerCase()
+  if (status === 'active') return { type: 'active', label: '启用' }
+  if (status === 'inactive') return { type: 'inactive', label: '禁用' }
+  return { type: 'unknown', label: status || '未知' }
 })
 
 const summaryCards = computed(() => [
@@ -203,10 +215,80 @@ const hideTokenTooltip = () => {
   activeTokenRow.value = null
 }
 
+const buildKeyUpdateEndpoint = (keyId) => `${String(keysEndpoint).replace(/\/$/, '')}/${keyId}`
+
+const updateKeyStatus = async (keyId, status) => {
+  const response = await fetch(buildKeyUpdateEndpoint(keyId), {
+    method: 'PUT',
+    headers: {
+      Accept: 'application/json',
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({ status }),
+  })
+
+  if (!response.ok) {
+    throw new Error(`更新 Key ${keyId} 状态为 ${status} 失败，状态码 ${response.status}`)
+  }
+}
+
+const syncKeyStatusByQuota = async (keyItems, usageStats) => {
+  const existedKeyIds = new Set(keyItems.map((item) => String(item?.id || '')).filter(Boolean))
+  for (const keyId of overLimitStateByKeyId.keys()) {
+    if (!existedKeyIds.has(keyId)) overLimitStateByKeyId.delete(keyId)
+  }
+
+  const tasks = keyItems
+    .map((item) => {
+      const keyId = String(item.id || '')
+      if (!keyId) return null
+
+      const quota = Number(item?.quota ?? 0)
+      const totalCost = Number(usageStats?.[keyId]?.total_actual_cost ?? 0)
+      const status = String(item?.status || '').toLowerCase()
+      const isOverLimit = quota > 0 && totalCost >= quota
+      const wasOverLimit = overLimitStateByKeyId.get(keyId) || false
+      overLimitStateByKeyId.set(keyId, isOverLimit)
+
+      if (statusSyncPendingKeyIds.has(keyId)) return null
+      if (isOverLimit && status !== 'inactive') {
+        return { item, keyId, nextStatus: 'inactive' }
+      }
+      if (!isOverLimit && wasOverLimit && status === 'inactive') {
+        return { item, keyId, nextStatus: 'active' }
+      }
+      return null
+    })
+    .filter(Boolean)
+
+  if (!tasks.length) return
+
+  const results = await Promise.allSettled(
+    tasks.map(async ({ item, keyId, nextStatus }) => {
+      statusSyncPendingKeyIds.add(keyId)
+      try {
+        await updateKeyStatus(keyId, nextStatus)
+        item.status = nextStatus
+      } finally {
+        statusSyncPendingKeyIds.delete(keyId)
+      }
+    }),
+  )
+
+  const failedMessages = results
+    .filter((result) => result.status === 'rejected')
+    .map((result) => result.reason?.message || '自动同步状态失败')
+
+  if (failedMessages.length) {
+    errorMessage.value = failedMessages.join('；')
+  }
+}
+
 const fetchUsageStats = async (apiKeyIds) => {
   if (!apiKeyIds.length) {
     usageStatsMap.value = {}
-    return
+    return {}
   }
 
   usageLoading.value = true
@@ -230,8 +312,10 @@ const fetchUsageStats = async (apiKeyIds) => {
     }
 
     usageStatsMap.value = stats
+    return stats
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : '统计请求失败'
+    return null
   } finally {
     usageLoading.value = false
   }
@@ -320,7 +404,10 @@ const fetchKeyOptions = async () => {
         : ''
 
     const apiKeyIds = fetchedItems.map((item) => Number(item.id)).filter((id) => Number.isFinite(id))
-    await fetchUsageStats(apiKeyIds)
+    const usageStats = await fetchUsageStats(apiKeyIds)
+    if (usageStats) {
+      await syncKeyStatusByQuota(fetchedItems, usageStats)
+    }
     await fetchUsageDetails(selectedKeyId.value)
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : '请求失败'
@@ -335,9 +422,17 @@ const handleKeyChange = () => {
 
 onMounted(() => {
   fetchKeyOptions()
+  autoRefreshTimer = setInterval(() => {
+    if (loading.value) return
+    fetchKeyOptions()
+  }, autoRefreshIntervalMs)
 })
 
 onBeforeUnmount(() => {
+  if (autoRefreshTimer) {
+    clearInterval(autoRefreshTimer)
+    autoRefreshTimer = null
+  }
   clearHideTooltipTimer()
   clearTokenHideTooltipTimer()
 })
@@ -363,6 +458,9 @@ onBeforeUnmount(() => {
           </option>
         </select>
         <button type="button" :disabled="loading" @click="fetchKeyOptions">刷新</button>
+        <div :class="['key-status', `key-status--${selectedKeyStatus.type}`]">
+          当前状态：{{ selectedKeyStatus.label }}
+        </div>
       </div>
     </header>
 
@@ -561,6 +659,35 @@ h1 {
   display: flex;
   align-items: center;
   gap: 10px;
+}
+
+.key-status {
+  display: inline-flex;
+  align-items: center;
+  height: 38px;
+  padding: 0 12px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  border: 1px solid transparent;
+}
+
+.key-status--active {
+  color: #047857;
+  background: #ecfdf5;
+  border-color: #a7f3d0;
+}
+
+.key-status--inactive {
+  color: #b91c1c;
+  background: #fef2f2;
+  border-color: #fecaca;
+}
+
+.key-status--unknown {
+  color: #475569;
+  background: #f8fafc;
+  border-color: #cbd5e1;
 }
 
 label {
