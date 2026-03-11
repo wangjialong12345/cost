@@ -1,5 +1,15 @@
 <script setup>
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import * as echarts from 'echarts/core'
+import { BarChart } from 'echarts/charts'
+import {
+  GridComponent,
+  TooltipComponent,
+  LegendComponent,
+} from 'echarts/components'
+import { CanvasRenderer } from 'echarts/renderers'
+import { computed, onBeforeUnmount, onMounted, ref, watch, nextTick } from 'vue'
+
+echarts.use([BarChart, GridComponent, TooltipComponent, LegendComponent, CanvasRenderer])
 
 const keysEndpoint = import.meta.env.VITE_KEYS_ENDPOINT || '/api/v1/keys'
 const usageStatsEndpoint =
@@ -7,12 +17,13 @@ const usageStatsEndpoint =
 const usageDetailsEndpoint = import.meta.env.VITE_USAGE_DETAILS_ENDPOINT || '/api/v1/usage'
 
 const token =
-  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjoxODAsImVtYWlsIjoiMTQ1Njc5OTM3OUBxcS5jb20iLCJyb2xlIjoidXNlciIsInRva2VuX3ZlcnNpb24iOjAsImV4cCI6MTc3Mjg2ODY3OSwibmJmIjoxNzcyNzgyMjc5LCJpYXQiOjE3NzI3ODIyNzl9.80IQGkAKFIGo0vfGqYJ5dz5oHjFTGbqhUwD6aFdMb0o'
+  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjoxODAsImVtYWlsIjoiMTQ1Njc5OTM3OUBxcS5jb20iLCJyb2xlIjoidXNlciIsInRva2VuX3ZlcnNpb24iOjAsImV4cCI6MTc3MzIxMzgwOSwibmJmIjoxNzczMTI3NDA5LCJpYXQiOjE3NzMxMjc0MDl9.WZ3YqfJbqm3xvN6F_4gKaGfHK4HexCKgG9BtWR36xxY'
 
 const timezone = 'Asia/Shanghai'
 const fixedStartDate = '2026-03-01'
 const fixedDetailsPage = '1'
 const fixedDetailsPageSize = '100'
+const chartPageSize = 100
 const autoRefreshIntervalMs = 30 * 1000
 
 const loading = ref(false)
@@ -30,6 +41,126 @@ const activeCostRow = ref(null)
 const costTooltipPosition = ref({ left: 0, top: 0 })
 const activeTokenRow = ref(null)
 const tokenTooltipPosition = ref({ left: 0, top: 0 })
+
+// 图表相关
+const chartGranularity = ref('day') // 'day' | 'hour'
+const chartContainer = ref(null)
+const chartItems = ref([])
+const chartLoading = ref(false)
+let chartInstance = null
+
+const getShanghaiHour = (date) =>
+  new Intl.DateTimeFormat('sv-SE', {
+    timeZone: timezone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+  })
+    .format(date)
+    .replace('T', ' ')
+    .slice(0, 13) + ':00'
+
+const chartData = computed(() => {
+  const items = chartItems.value
+  if (!items.length) return { xAxis: [], series: [] }
+
+  const isHour = chartGranularity.value === 'hour'
+  const now = Date.now()
+  // 按天：最近 7 天；按小时：最近 24 小时
+  const cutoff = now - (isHour ? 24 * 60 * 60 * 1000 : 7 * 24 * 60 * 60 * 1000)
+
+  // 生成完整的时间桶（保证没有数据的桶也显示为 0）
+  const buckets = new Map()
+  if (isHour) {
+    for (let i = 23; i >= 0; i--) {
+      const d = new Date(now - i * 60 * 60 * 1000)
+      buckets.set(getShanghaiHour(d), 0)
+    }
+  } else {
+    for (let i = 6; i >= 0; i--) {
+      const d = new Date(now - i * 24 * 60 * 60 * 1000)
+      buckets.set(getShanghaiDate(d), 0)
+    }
+  }
+
+  for (const item of items) {
+    if (!item.created_at) continue
+    const date = new Date(item.created_at)
+    if (date.getTime() < cutoff) continue
+    const key = isHour ? getShanghaiHour(date) : getShanghaiDate(date)
+    if (buckets.has(key)) {
+      buckets.set(key, buckets.get(key) + Number(item.actual_cost || 0))
+    }
+  }
+
+  const entries = [...buckets.entries()]
+  return {
+    xAxis: entries.map(([k]) => k),
+    series: entries.map(([, v]) => Number(v.toFixed(6))),
+  }
+})
+
+const renderChart = () => {
+  if (!chartContainer.value) return
+  // 容器 DOM 被销毁重建后，旧实例指向已移除的节点，需要重新初始化
+  if (chartInstance && chartInstance.getDom() !== chartContainer.value) {
+    chartInstance.dispose()
+    chartInstance = null
+  }
+  if (!chartInstance) {
+    chartInstance = echarts.init(chartContainer.value)
+  }
+  const { xAxis, series } = chartData.value
+  chartInstance.setOption(
+    {
+      tooltip: {
+        trigger: 'axis',
+        formatter: (params) => {
+          const p = params[0]
+          return `${p.name}<br/>消费：<b>$${p.value}</b>`
+        },
+      },
+      grid: { left: 60, right: 20, top: 20, bottom: 60 },
+      xAxis: {
+        type: 'category',
+        data: xAxis,
+        axisLabel: {
+          rotate: xAxis.length > 10 ? 30 : 0,
+          fontSize: 12,
+          color: '#475569',
+        },
+        axisLine: { lineStyle: { color: '#d0d7e2' } },
+      },
+      yAxis: {
+        type: 'value',
+        axisLabel: {
+          formatter: (v) => `$${v}`,
+          fontSize: 12,
+          color: '#475569',
+        },
+        splitLine: { lineStyle: { color: '#f0f4f8' } },
+      },
+      series: [
+        {
+          type: 'bar',
+          data: series,
+          itemStyle: { color: '#3b82f6', borderRadius: [4, 4, 0, 0] },
+          emphasis: { itemStyle: { color: '#2563eb' } },
+        },
+      ],
+    },
+    true,
+  )
+}
+
+watch(chartData, () => {
+  nextTick(renderChart)
+})
+
+watch(chartGranularity, () => {
+  nextTick(renderChart)
+})
 const statusSyncPendingKeyIds = new Set()
 const overLimitStateByKeyId = new Map()
 let autoRefreshTimer = null
@@ -321,6 +452,62 @@ const fetchUsageStats = async (apiKeyIds) => {
   }
 }
 
+const fetchChartAllPages = async (apiKeyId) => {
+  if (!apiKeyId) {
+    chartItems.value = []
+    return
+  }
+
+  chartLoading.value = true
+  chartItems.value = []
+
+  try {
+    const now = new Date()
+    const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000)
+    const startDate = getShanghaiDate(sevenDaysAgo)
+    const endDate = getShanghaiDate(now)
+
+    const buildQuery = (page) =>
+      new URLSearchParams({
+        page: String(page),
+        page_size: String(chartPageSize),
+        api_key_id: String(apiKeyId),
+        start_date: startDate,
+        end_date: endDate,
+        timezone,
+      }).toString()
+
+    const fetchPage = (page) =>
+      fetch(`${usageDetailsEndpoint}?${buildQuery(page)}`, {
+        headers: { Accept: 'application/json', Authorization: `Bearer ${token}` },
+      }).then((r) => r.json())
+
+    const first = await fetchPage(1)
+    if (first?.code !== 0 || !Array.isArray(first?.data?.items)) return
+
+    const total = Number(first?.data?.total || 0)
+    const totalPages = Math.ceil(total / chartPageSize)
+    let allItems = [...first.data.items]
+
+    if (totalPages > 1) {
+      const rest = await Promise.all(
+        Array.from({ length: totalPages - 1 }, (_, i) => fetchPage(i + 2)),
+      )
+      for (const payload of rest) {
+        if (payload?.code === 0 && Array.isArray(payload?.data?.items)) {
+          allItems = allItems.concat(payload.data.items)
+        }
+      }
+    }
+
+    chartItems.value = allItems
+  } catch {
+    // 图表拉取失败不影响主界面
+  } finally {
+    chartLoading.value = false
+  }
+}
+
 const fetchUsageDetails = async (apiKeyId) => {
   if (!apiKeyId) {
     usageItems.value = []
@@ -409,6 +596,7 @@ const fetchKeyOptions = async () => {
       await syncKeyStatusByQuota(fetchedItems, usageStats)
     }
     await fetchUsageDetails(selectedKeyId.value)
+    fetchChartAllPages(selectedKeyId.value)
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : '请求失败'
   } finally {
@@ -418,6 +606,7 @@ const fetchKeyOptions = async () => {
 
 const handleKeyChange = () => {
   fetchUsageDetails(selectedKeyId.value)
+  fetchChartAllPages(selectedKeyId.value)
 }
 
 onMounted(() => {
@@ -426,7 +615,12 @@ onMounted(() => {
     if (loading.value) return
     fetchKeyOptions()
   }, autoRefreshIntervalMs)
+  window.addEventListener('resize', handleChartResize)
 })
+
+const handleChartResize = () => {
+  chartInstance?.resize()
+}
 
 onBeforeUnmount(() => {
   if (autoRefreshTimer) {
@@ -435,6 +629,9 @@ onBeforeUnmount(() => {
   }
   clearHideTooltipTimer()
   clearTokenHideTooltipTimer()
+  window.removeEventListener('resize', handleChartResize)
+  chartInstance?.dispose()
+  chartInstance = null
 })
 </script>
 
@@ -473,6 +670,27 @@ onBeforeUnmount(() => {
       </div>
     </section>
 
+    <section class="chart-card">
+      <div class="chart-header">
+        <span class="chart-title">消费趋势</span>
+        <div class="chart-tabs">
+          <button
+            type="button"
+            :class="['chart-tab', { active: chartGranularity === 'day' }]"
+            @click="chartGranularity = 'day'"
+          >按天</button>
+          <button
+            type="button"
+            :class="['chart-tab', { active: chartGranularity === 'hour' }]"
+            @click="chartGranularity = 'hour'"
+          >按小时</button>
+        </div>
+      </div>
+      <div v-if="chartLoading" class="chart-placeholder">图表加载中...</div>
+      <div v-else-if="!chartItems.length" class="chart-placeholder">暂无数据</div>
+      <div v-else ref="chartContainer" class="chart-body"></div>
+    </section>
+
     <section class="table-card">
       <div class="table-title">
         <span>明细记录</span>
@@ -484,6 +702,7 @@ onBeforeUnmount(() => {
           <thead>
             <tr>
               <th>API 密钥</th>
+              <th>时间</th>
               <th>模型</th>
               <th>推理强度</th>
               <th>类型</th>
@@ -491,7 +710,6 @@ onBeforeUnmount(() => {
               <th>费用</th>
               <th>首 TOKEN</th>
               <th>耗时</th>
-              <th>时间</th>
               <th>USER-AGENT</th>
             </tr>
           </thead>
@@ -504,6 +722,7 @@ onBeforeUnmount(() => {
             </tr>
             <tr v-for="row in usageItems" :key="row.id">
               <td>{{ row.api_key?.name || selectedKey?.name || '-' }}</td>
+              <td>{{ formatDateTime(row.created_at) }}</td>
               <td>{{ row.model || '-' }}</td>
               <td>{{ row.reasoning_effort || '-' }}</td>
               <td>
@@ -546,7 +765,6 @@ onBeforeUnmount(() => {
               </td>
               <td>{{ formatSeconds(row.first_token_ms) }}</td>
               <td>{{ formatSeconds(row.duration_ms) }}</td>
-              <td>{{ formatDateTime(row.created_at) }}</td>
               <td>{{ row.user_agent || '-' }}</td>
             </tr>
           </tbody>
@@ -755,6 +973,63 @@ button:disabled {
   font-size: 24px;
   color: #111827;
   line-height: 1.15;
+}
+
+.chart-card {
+  background: #fff;
+  border: 1px solid #d9e0ea;
+  border-radius: 16px;
+  overflow: hidden;
+  margin-bottom: 16px;
+}
+
+.chart-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 16px;
+  border-bottom: 1px solid #e6ebf2;
+}
+
+.chart-title {
+  color: #475569;
+  font-size: 14px;
+}
+
+.chart-tabs {
+  display: flex;
+  gap: 4px;
+}
+
+.chart-tab {
+  height: 28px;
+  padding: 0 12px;
+  border-radius: 6px;
+  font-size: 13px;
+  background: #f1f5f9;
+  color: #64748b;
+  border: 1px solid transparent;
+  cursor: pointer;
+
+  &.active {
+    background: #dbeafe;
+    color: #1d4ed8;
+    border-color: #bfdbfe;
+  }
+}
+
+.chart-body {
+  width: 100%;
+  height: 260px;
+}
+
+.chart-placeholder {
+  height: 100px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #94a3b8;
+  font-size: 14px;
 }
 
 .table-card {
