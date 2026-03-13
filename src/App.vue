@@ -21,14 +21,14 @@ const token =
 
 const timezone = 'Asia/Shanghai'
 const fixedStartDate = '2026-03-01'
-const fixedDetailsPage = '1'
 const fixedDetailsPageSize = '100'
 const chartPageSize = 100
-const autoRefreshIntervalMs = 30 * 1000
+const autoRefreshIntervalMs = 3 * 60 * 1000
 
 const loading = ref(false)
 const usageLoading = ref(false)
 const detailsLoading = ref(false)
+const detailsLoadingMore = ref(false)
 const errorMessage = ref('')
 const detailsErrorMessage = ref('')
 const items = ref([])
@@ -37,6 +37,8 @@ const usageStatsMap = ref({})
 const usageItems = ref([])
 const usageTotal = ref(0)
 const usageEndDate = ref('')
+const detailsCurrentPage = ref(1)
+const tableWrap = ref(null)
 const activeCostRow = ref(null)
 const costTooltipPosition = ref({ left: 0, top: 0 })
 const activeTokenRow = ref(null)
@@ -215,14 +217,26 @@ const selectedKey = computed(() =>
   items.value.find((item) => String(item.id) === selectedKeyId.value),
 )
 
-const selectedUsage = computed(() => usageStatsMap.value[selectedKeyId.value] || null)
+const selectedUsage = computed(() => {
+  if (selectedKeyId.value === '') {
+    const stats = Object.values(usageStatsMap.value)
+    if (!stats.length) return null
+    return {
+      today_actual_cost: stats.reduce((sum, s) => sum + Number(s?.today_actual_cost || 0), 0),
+      total_actual_cost: stats.reduce((sum, s) => sum + Number(s?.total_actual_cost || 0), 0),
+    }
+  }
+  return usageStatsMap.value[selectedKeyId.value] || null
+})
 
 const quotaDisplay = computed(() => {
+  if (selectedKeyId.value === '') return '-'
   const quota = Number(selectedKey.value?.quota ?? 0)
   return quota === 0 ? '无限限制额度' : formatAmount(quota)
 })
 
 const selectedKeyStatus = computed(() => {
+  if (selectedKeyId.value === '') return { type: 'unknown', label: '全部' }
   if (!selectedKey.value) return { type: 'unknown', label: '未选择' }
   const status = String(selectedKey.value?.status || '').toLowerCase()
   if (status === 'active') return { type: 'active', label: '启用' }
@@ -453,11 +467,6 @@ const fetchUsageStats = async (apiKeyIds) => {
 }
 
 const fetchChartAllPages = async (apiKeyId) => {
-  if (!apiKeyId) {
-    chartItems.value = []
-    return
-  }
-
   chartLoading.value = true
   chartItems.value = []
 
@@ -467,15 +476,17 @@ const fetchChartAllPages = async (apiKeyId) => {
     const startDate = getShanghaiDate(sevenDaysAgo)
     const endDate = getShanghaiDate(now)
 
-    const buildQuery = (page) =>
-      new URLSearchParams({
+    const buildQuery = (page) => {
+      const params = {
         page: String(page),
         page_size: String(chartPageSize),
-        api_key_id: String(apiKeyId),
         start_date: startDate,
         end_date: endDate,
         timezone,
-      }).toString()
+      }
+      if (apiKeyId) params.api_key_id = String(apiKeyId)
+      return new URLSearchParams(params).toString()
+    }
 
     const fetchPage = (page) =>
       fetch(`${usageDetailsEndpoint}?${buildQuery(page)}`, {
@@ -508,28 +519,31 @@ const fetchChartAllPages = async (apiKeyId) => {
   }
 }
 
-const fetchUsageDetails = async (apiKeyId) => {
-  if (!apiKeyId) {
+const fetchUsageDetails = async (apiKeyId, page = 1) => {
+  const isLoadMore = page > 1
+
+  if (!isLoadMore) {
+    detailsCurrentPage.value = 1
     usageItems.value = []
     usageTotal.value = 0
-    return
+    detailsLoading.value = true
+    detailsErrorMessage.value = ''
+    usageEndDate.value = getShanghaiDate()
+  } else {
+    detailsLoadingMore.value = true
   }
 
-  detailsLoading.value = true
-  detailsErrorMessage.value = ''
-  usageEndDate.value = getShanghaiDate()
-
   try {
-    const query = new URLSearchParams({
-      page: fixedDetailsPage,
+    const params = {
+      page: String(page),
       page_size: fixedDetailsPageSize,
-      api_key_id: String(apiKeyId),
       start_date: fixedStartDate,
-      end_date: usageEndDate.value,
+      end_date: usageEndDate.value || getShanghaiDate(),
       timezone,
-    })
+    }
+    if (apiKeyId) params.api_key_id = String(apiKeyId)
 
-    const response = await fetch(`${usageDetailsEndpoint}?${query.toString()}`, {
+    const response = await fetch(`${usageDetailsEndpoint}?${new URLSearchParams(params).toString()}`, {
       method: 'GET',
       headers: {
         Accept: 'application/json',
@@ -545,12 +559,31 @@ const fetchUsageDetails = async (apiKeyId) => {
       throw new Error(payload?.message || '明细接口返回格式不符合预期')
     }
 
-    usageItems.value = fetchedItems
+    if (isLoadMore) {
+      usageItems.value = [...usageItems.value, ...fetchedItems]
+    } else {
+      usageItems.value = fetchedItems
+    }
     usageTotal.value = Number(payload?.data?.total || 0)
+    detailsCurrentPage.value = page
   } catch (error) {
     detailsErrorMessage.value = error instanceof Error ? error.message : '明细请求失败'
   } finally {
-    detailsLoading.value = false
+    if (isLoadMore) {
+      detailsLoadingMore.value = false
+    } else {
+      detailsLoading.value = false
+    }
+  }
+}
+
+const handleTableScroll = () => {
+  if (detailsLoading.value || detailsLoadingMore.value) return
+  if (usageItems.value.length >= usageTotal.value) return
+  const el = tableWrap.value
+  if (!el) return
+  if (el.scrollTop + el.clientHeight >= el.scrollHeight - 120) {
+    fetchUsageDetails(selectedKeyId.value, detailsCurrentPage.value + 1)
   }
 }
 
@@ -583,12 +616,10 @@ const fetchKeyOptions = async () => {
 
     items.value = fetchedItems
     const previousSelectedKeyId = selectedKeyId.value
-    const hasPreviousKey = fetchedItems.some((item) => String(item.id) === previousSelectedKeyId)
-    selectedKeyId.value = hasPreviousKey
-      ? previousSelectedKeyId
-      : fetchedItems[0]?.id
-        ? String(fetchedItems[0].id)
-        : ''
+    const hasPreviousKey =
+      previousSelectedKeyId === '' ||
+      fetchedItems.some((item) => String(item.id) === previousSelectedKeyId)
+    selectedKeyId.value = hasPreviousKey ? previousSelectedKeyId : ''
 
     const apiKeyIds = fetchedItems.map((item) => Number(item.id)).filter((id) => Number.isFinite(id))
     const usageStats = await fetchUsageStats(apiKeyIds)
@@ -646,10 +677,10 @@ onBeforeUnmount(() => {
         <select
           id="key-select"
           v-model="selectedKeyId"
-          :disabled="loading || !nameOptions.length"
+          :disabled="loading"
           @change="handleKeyChange"
         >
-          <option value="" disabled>{{ loading ? '加载中...' : '请选择 Key' }}</option>
+          <option value="">{{ loading ? '加载中...' : '全部' }}</option>
           <option v-for="option in nameOptions" :key="option.id" :value="option.id">
             {{ option.name }}
           </option>
@@ -697,7 +728,7 @@ onBeforeUnmount(() => {
         <span>共 {{ usageTotal }} 条</span>
       </div>
 
-      <div class="table-wrap">
+      <div ref="tableWrap" class="table-wrap" @scroll="handleTableScroll">
         <table>
           <thead>
             <tr>
@@ -772,6 +803,8 @@ onBeforeUnmount(() => {
       </div>
 
       <p v-if="detailsLoading" class="loading-tip">明细加载中...</p>
+      <p v-else-if="detailsLoadingMore" class="loading-tip">加载更多...</p>
+      <p v-else-if="!detailsLoading && usageItems.length > 0 && usageItems.length >= usageTotal" class="loading-tip end-tip">已加载全部 {{ usageTotal }} 条</p>
     </section>
 
     <Teleport to="body">
@@ -1051,6 +1084,7 @@ button:disabled {
 
 .table-wrap {
   overflow: auto;
+  max-height: 600px;
 }
 
 table {
@@ -1216,6 +1250,11 @@ td {
   padding: 10px 16px 14px;
   color: #64748b;
   font-size: 13px;
+}
+
+.end-tip {
+  text-align: center;
+  color: #94a3b8;
 }
 
 @media (max-width: 900px) {
