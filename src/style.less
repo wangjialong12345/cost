@@ -15,14 +15,20 @@
   box-sizing: border-box;
 }
 
+html, body {
+  height: 100%;
+  overflow: hidden;
+}
+
 body {
   margin: 0;
   min-width: 320px;
-  min-height: 100vh;
   background: linear-gradient(180deg, @bg-start 0%, @bg-end 100%);
 }
 
 #app {
-  min-height: 100vh;
+  height: 100%;
   padding: 20px;
+  overflow: hidden;
+  box-sizing: border-box;
 }

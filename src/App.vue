@@ -17,7 +17,7 @@ const usageStatsEndpoint =
 const usageDetailsEndpoint = import.meta.env.VITE_USAGE_DETAILS_ENDPOINT || '/api/v1/usage'
 
 const token =
-  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjoxODAsImVtYWlsIjoiMTQ1Njc5OTM3OUBxcS5jb20iLCJyb2xlIjoidXNlciIsInRva2VuX3ZlcnNpb24iOjAsImV4cCI6MTc3MzM4NjM3MiwibmJmIjoxNzczMjk5OTcyLCJpYXQiOjE3NzMyOTk5NzJ9.81wW7o0-__TJRd-3DtK-PGWrI-P3OzbgnPksXtZWZ_M'
+  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjoxODAsImVtYWlsIjoiMTQ1Njc5OTM3OUBxcS5jb20iLCJyb2xlIjoidXNlciIsInRva2VuX3ZlcnNpb24iOjAsImV4cCI6MTc3MzQ3MjY1NSwibmJmIjoxNzczMzg2MjU1LCJpYXQiOjE3NzMzODYyNTV9.qEM3kQMjqlV-1cxpLSodaYAhvicJyC4CxUo_InzHssU'
 
 const timezone = 'Asia/Shanghai'
 const fixedStartDate = '2026-03-01'
@@ -890,6 +890,11 @@ onBeforeUnmount(() => {
 .usage-page {
   width: min(1600px, 100%);
   margin: 0 auto;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  box-sizing: border-box;
 }
 
 .topbar {
@@ -897,7 +902,8 @@ onBeforeUnmount(() => {
   justify-content: space-between;
   gap: 20px;
   align-items: flex-end;
-  margin-bottom: 14px;
+  margin-bottom: 10px;
+  flex-shrink: 0;
 }
 
 h1 {
@@ -982,8 +988,9 @@ button:disabled {
   display: grid;
   grid-template-columns: repeat(3, minmax(220px, 260px));
   justify-content: flex-start;
-  gap: 14px;
-  margin: 14px 0 16px;
+  gap: 10px;
+  margin: 10px 0 10px;
+  flex-shrink: 0;
 }
 
 .summary-item {
@@ -991,7 +998,7 @@ button:disabled {
   border: 1px solid #c9d3e3;
   border-left: 4px solid #3b82f6;
   border-radius: 12px;
-  padding: 12px 14px;
+  padding: 8px 14px;
   box-shadow: 0 4px 12px rgba(15, 23, 42, 0.06);
 }
 
@@ -1013,7 +1020,8 @@ button:disabled {
   border: 1px solid #d9e0ea;
   border-radius: 16px;
   overflow: hidden;
-  margin-bottom: 16px;
+  margin-bottom: 10px;
+  flex-shrink: 0;
 }
 
 .chart-header {
@@ -1053,7 +1061,7 @@ button:disabled {
 
 .chart-body {
   width: 100%;
-  height: 260px;
+  height: 200px;
 }
 
 .chart-placeholder {
@@ -1070,6 +1078,10 @@ button:disabled {
   border: 1px solid #d9e0ea;
   border-radius: 16px;
   overflow: hidden;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
 }
 
 .table-title {
@@ -1084,7 +1096,8 @@ button:disabled {
 
 .table-wrap {
   overflow: auto;
-  max-height: 600px;
+  flex: 1;
+  min-height: 0;
 }
 
 table {
