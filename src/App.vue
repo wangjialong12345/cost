@@ -17,7 +17,7 @@ const usageStatsEndpoint =
 const usageDetailsEndpoint = import.meta.env.VITE_USAGE_DETAILS_ENDPOINT || '/api/v1/usage'
 
 const token =
-  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjoxODAsImVtYWlsIjoiMTQ1Njc5OTM3OUBxcS5jb20iLCJyb2xlIjoidXNlciIsInRva2VuX3ZlcnNpb24iOjAsImV4cCI6MTc3MzIxMzgwOSwibmJmIjoxNzczMTI3NDA5LCJpYXQiOjE3NzMxMjc0MDl9.WZ3YqfJbqm3xvN6F_4gKaGfHK4HexCKgG9BtWR36xxY'
+  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjoxODAsImVtYWlsIjoiMTQ1Njc5OTM3OUBxcS5jb20iLCJyb2xlIjoidXNlciIsInRva2VuX3ZlcnNpb24iOjAsImV4cCI6MTc3MzM4NjM3MiwibmJmIjoxNzczMjk5OTcyLCJpYXQiOjE3NzMyOTk5NzJ9.81wW7o0-__TJRd-3DtK-PGWrI-P3OzbgnPksXtZWZ_M'
 
 const timezone = 'Asia/Shanghai'
 const fixedStartDate = '2026-03-01'
@@ -561,7 +561,7 @@ const fetchKeyOptions = async () => {
   try {
     const query = new URLSearchParams({
       page: '1',
-      page_size: '10',
+      page_size: '100',
       timezone,
     })
 
