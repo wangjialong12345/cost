@@ -17,7 +17,7 @@ const usageStatsEndpoint =
 const usageDetailsEndpoint = import.meta.env.VITE_USAGE_DETAILS_ENDPOINT || '/api/v1/usage'
 
 const token =
-  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjoxODAsImVtYWlsIjoiMTQ1Njc5OTM3OUBxcS5jb20iLCJyb2xlIjoidXNlciIsInRva2VuX3ZlcnNpb24iOjAsImV4cCI6MTc3MzQ3MjY1NSwibmJmIjoxNzczMzg2MjU1LCJpYXQiOjE3NzMzODYyNTV9.qEM3kQMjqlV-1cxpLSodaYAhvicJyC4CxUo_InzHssU'
+  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjoxODAsImVtYWlsIjoiMTQ1Njc5OTM3OUBxcS5jb20iLCJyb2xlIjoidXNlciIsInRva2VuX3ZlcnNpb24iOjAsImV4cCI6MTc3MzU3MzIxMCwibmJmIjoxNzczNDg2ODEwLCJpYXQiOjE3NzM0ODY4MTB9.6W3TxJx2gQWxqYaJZf3jSJaQ32MJJ9_8oB3NF_VDYfc'
 
 const timezone = 'Asia/Shanghai'
 const fixedStartDate = '2026-03-01'
@@ -729,7 +729,7 @@ onBeforeUnmount(() => {
       </div>
 
       <div ref="tableWrap" class="table-wrap" @scroll="handleTableScroll">
-        <table>
+        <table class="pc-table">
           <thead>
             <tr>
               <th>API 密钥</th>
@@ -800,6 +800,39 @@ onBeforeUnmount(() => {
             </tr>
           </tbody>
         </table>
+
+        <div class="mobile-list">
+          <p v-if="detailsErrorMessage" class="table-msg table-error">{{ detailsErrorMessage }}</p>
+          <p v-else-if="!detailsLoading && !usageItems.length" class="table-msg">暂无明细</p>
+          <div v-for="row in usageItems" :key="'m-' + row.id" class="mobile-card">
+            <div class="mobile-card-head">
+              <span class="mobile-card-name">{{ row.api_key?.name || selectedKey?.name || '-' }}</span>
+              <span class="mobile-card-model">{{ row.model || '-' }}</span>
+            </div>
+            <div class="mobile-card-head">
+              <span class="mobile-card-time">{{ formatDateTime(row.created_at) }}</span>
+              <span class="type-tag">{{ formatRequestType(row.request_type) }}</span>
+            </div>
+            <div class="mobile-card-tokens">
+              <span class="token-down">↓ {{ row.input_tokens || 0 }}</span>
+              <span class="token-up">↑ {{ row.output_tokens || 0 }}</span>
+              <span class="token-read">⟲ {{ formatTokenCount(row.cache_read_tokens) }}</span>
+              <span class="token-write">✎ {{ formatTokenCount(row.cache_creation_tokens) }}</span>
+            </div>
+            <div class="mobile-card-row">
+              <span class="mobile-card-label">费用</span>
+              <span class="cost">{{ formatUsd(row.actual_cost) }}</span>
+              <span class="mobile-card-label">推理</span>
+              <span>{{ row.reasoning_effort || '-' }}</span>
+            </div>
+            <div class="mobile-card-row">
+              <span class="mobile-card-label">首Token</span>
+              <span>{{ formatSeconds(row.first_token_ms) }}</span>
+              <span class="mobile-card-label">耗时</span>
+              <span>{{ formatSeconds(row.duration_ms) }}</span>
+            </div>
+          </div>
+        </div>
       </div>
 
       <p v-if="detailsLoading" class="loading-tip">明细加载中...</p>
@@ -1270,7 +1303,17 @@ td {
   color: #94a3b8;
 }
 
+.mobile-list {
+  display: none;
+}
+
 @media (max-width: 900px) {
+  .usage-page {
+    height: auto;
+    overflow: visible;
+    padding-bottom: 20px;
+  }
+
   .topbar {
     flex-direction: column;
     align-items: stretch;
@@ -1282,6 +1325,86 @@ td {
 
   .summary {
     grid-template-columns: 1fr;
+  }
+
+  .table-card {
+    flex: none;
+    min-height: auto;
+  }
+
+  .table-wrap {
+    overflow: visible;
+    flex: none;
+  }
+
+  .pc-table {
+    display: none;
+  }
+
+  .mobile-list {
+    display: block;
+    padding: 8px 12px 4px;
+  }
+
+  .mobile-card {
+    border: 1px solid #e6ebf2;
+    border-radius: 10px;
+    padding: 10px 12px;
+    margin-bottom: 8px;
+    background: #f8fafc;
+  }
+
+  .mobile-card-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 6px;
+  }
+
+  .mobile-card-name {
+    font-weight: 600;
+    color: #1f2937;
+    font-size: 14px;
+  }
+
+  .mobile-card-model {
+    color: #475569;
+    font-size: 13px;
+  }
+
+  .mobile-card-time {
+    color: #64748b;
+    font-size: 12px;
+  }
+
+  .mobile-card-tokens {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+    padding: 6px 0;
+    border-top: 1px solid #e9edf3;
+    border-bottom: 1px solid #e9edf3;
+    margin: 4px 0;
+    font-size: 13px;
+  }
+
+  .mobile-card-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-top: 6px;
+    font-size: 13px;
+    color: #374151;
+  }
+
+  .mobile-card-label {
+    color: #94a3b8;
+    font-size: 12px;
+    flex-shrink: 0;
+
+    &:nth-child(3) {
+      margin-left: auto;
+    }
   }
 }
 </style>
