@@ -1,42 +1,21 @@
 <script setup>
-import * as echarts from 'echarts/core'
-import { BarChart } from 'echarts/charts'
-import {
-  GridComponent,
-  TooltipComponent,
-  LegendComponent,
-} from 'echarts/components'
-import { CanvasRenderer } from 'echarts/renderers'
-import { computed, onBeforeUnmount, onMounted, ref, watch, nextTick } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 
-echarts.use([BarChart, GridComponent, TooltipComponent, LegendComponent, CanvasRenderer])
-
-const keysEndpoint = import.meta.env.VITE_KEYS_ENDPOINT || '/api/v1/keys'
-const usageStatsEndpoint =
-  import.meta.env.VITE_USAGE_ENDPOINT || '/api/v1/usage/dashboard/api-keys-usage'
-const usageDetailsEndpoint = import.meta.env.VITE_USAGE_DETAILS_ENDPOINT || '/api/v1/usage'
-
-const token =
-  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjoxODAsImVtYWlsIjoiMTQ1Njc5OTM3OUBxcS5jb20iLCJyb2xlIjoidXNlciIsInRva2VuX3ZlcnNpb24iOjAsImV4cCI6MTc3MzU3MzIxMCwibmJmIjoxNzczNDg2ODEwLCJpYXQiOjE3NzM0ODY4MTB9.6W3TxJx2gQWxqYaJZf3jSJaQ32MJJ9_8oB3NF_VDYfc'
-
+const logEndpoint = 'https://cn.nyi.cn/api/log'
+const keysEndpoint = 'https://cn.nyi.cn/api/keys'
+const token = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOjQsInNpZ24iOiJlZWE3MDY2YjNhNTk0MTcxMzIyNGYwNDYxMGM5ZWUwMyIsInJvbGUiOiJ1c2VyIiwiZXhwIjoxNzc5MDg2ODYwLCJuYmYiOjE3NzY0MDg0NjAsImlhdCI6MTc3NjQwODQ2MH0.dmzpT-Xa2vf4nt34Ox0J4xE-tAGaWNDULJD89RE6Ppo'
 const timezone = 'Asia/Shanghai'
-const fixedStartDate = '2026-03-01'
-const fixedDetailsPageSize = '100'
-const chartPageSize = 100
-const autoRefreshIntervalMs = 3 * 60 * 1000
 
 const loading = ref(false)
-const usageLoading = ref(false)
+const keysLoading = ref(false)
 const detailsLoading = ref(false)
 const detailsLoadingMore = ref(false)
 const errorMessage = ref('')
 const detailsErrorMessage = ref('')
-const items = ref([])
+const keys = ref([])
 const selectedKeyId = ref('')
-const usageStatsMap = ref({})
 const usageItems = ref([])
 const usageTotal = ref(0)
-const usageEndDate = ref('')
 const detailsCurrentPage = ref(1)
 const tableWrap = ref(null)
 const activeCostRow = ref(null)
@@ -44,128 +23,6 @@ const costTooltipPosition = ref({ left: 0, top: 0 })
 const activeTokenRow = ref(null)
 const tokenTooltipPosition = ref({ left: 0, top: 0 })
 
-// 图表相关
-const chartGranularity = ref('day') // 'day' | 'hour'
-const chartContainer = ref(null)
-const chartItems = ref([])
-const chartLoading = ref(false)
-let chartInstance = null
-
-const getShanghaiHour = (date) =>
-  new Intl.DateTimeFormat('sv-SE', {
-    timeZone: timezone,
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-  })
-    .format(date)
-    .replace('T', ' ')
-    .slice(0, 13) + ':00'
-
-const chartData = computed(() => {
-  const items = chartItems.value
-  if (!items.length) return { xAxis: [], series: [] }
-
-  const isHour = chartGranularity.value === 'hour'
-  const now = Date.now()
-  // 按天：最近 7 天；按小时：最近 24 小时
-  const cutoff = now - (isHour ? 24 * 60 * 60 * 1000 : 7 * 24 * 60 * 60 * 1000)
-
-  // 生成完整的时间桶（保证没有数据的桶也显示为 0）
-  const buckets = new Map()
-  if (isHour) {
-    for (let i = 23; i >= 0; i--) {
-      const d = new Date(now - i * 60 * 60 * 1000)
-      buckets.set(getShanghaiHour(d), 0)
-    }
-  } else {
-    for (let i = 6; i >= 0; i--) {
-      const d = new Date(now - i * 24 * 60 * 60 * 1000)
-      buckets.set(getShanghaiDate(d), 0)
-    }
-  }
-
-  for (const item of items) {
-    if (!item.created_at) continue
-    const date = new Date(item.created_at)
-    if (date.getTime() < cutoff) continue
-    const key = isHour ? getShanghaiHour(date) : getShanghaiDate(date)
-    if (buckets.has(key)) {
-      buckets.set(key, buckets.get(key) + Number(item.actual_cost || 0))
-    }
-  }
-
-  const entries = [...buckets.entries()]
-  return {
-    xAxis: entries.map(([k]) => k),
-    series: entries.map(([, v]) => Number(v.toFixed(6))),
-  }
-})
-
-const renderChart = () => {
-  if (!chartContainer.value) return
-  // 容器 DOM 被销毁重建后，旧实例指向已移除的节点，需要重新初始化
-  if (chartInstance && chartInstance.getDom() !== chartContainer.value) {
-    chartInstance.dispose()
-    chartInstance = null
-  }
-  if (!chartInstance) {
-    chartInstance = echarts.init(chartContainer.value)
-  }
-  const { xAxis, series } = chartData.value
-  chartInstance.setOption(
-    {
-      tooltip: {
-        trigger: 'axis',
-        formatter: (params) => {
-          const p = params[0]
-          return `${p.name}<br/>消费：<b>$${p.value}</b>`
-        },
-      },
-      grid: { left: 60, right: 20, top: 20, bottom: 60 },
-      xAxis: {
-        type: 'category',
-        data: xAxis,
-        axisLabel: {
-          rotate: xAxis.length > 10 ? 30 : 0,
-          fontSize: 12,
-          color: '#475569',
-        },
-        axisLine: { lineStyle: { color: '#d0d7e2' } },
-      },
-      yAxis: {
-        type: 'value',
-        axisLabel: {
-          formatter: (v) => `$${v}`,
-          fontSize: 12,
-          color: '#475569',
-        },
-        splitLine: { lineStyle: { color: '#f0f4f8' } },
-      },
-      series: [
-        {
-          type: 'bar',
-          data: series,
-          itemStyle: { color: '#3b82f6', borderRadius: [4, 4, 0, 0] },
-          emphasis: { itemStyle: { color: '#2563eb' } },
-        },
-      ],
-    },
-    true,
-  )
-}
-
-watch(chartData, () => {
-  nextTick(renderChart)
-})
-
-watch(chartGranularity, () => {
-  nextTick(renderChart)
-})
-const statusSyncPendingKeyIds = new Set()
-const overLimitStateByKeyId = new Map()
-let autoRefreshTimer = null
 let hideTooltipTimer = null
 let hideTokenTooltipTimer = null
 
@@ -194,10 +51,7 @@ const formatDateTime = (value) => {
   return date.toLocaleString('zh-CN', { timeZone: timezone, hour12: false })
 }
 
-const formatRequestType = (type) => {
-  if (!type) return '-'
-  return type === 'stream' ? '流式' : type
-}
+const formatRequestType = (stream) => (stream ? '流式' : '普通')
 
 const formatTokenCount = (value) => {
   const num = Number(value || 0)
@@ -206,54 +60,24 @@ const formatTokenCount = (value) => {
   return String(num)
 }
 
-const nameOptions = computed(() =>
-  items.value.map((item) => ({
-    id: String(item.id),
-    name: item.name || `未命名-${item.id}`,
-  })),
-)
-
 const selectedKey = computed(() =>
-  items.value.find((item) => String(item.id) === selectedKeyId.value),
+  keys.value.find((k) => String(k.id) === selectedKeyId.value) || null,
 )
 
-const selectedUsage = computed(() => {
-  if (selectedKeyId.value === '') {
-    const stats = Object.values(usageStatsMap.value)
-    if (!stats.length) return null
-    return {
-      today_actual_cost: stats.reduce((sum, s) => sum + Number(s?.today_actual_cost || 0), 0),
-      total_actual_cost: stats.reduce((sum, s) => sum + Number(s?.total_actual_cost || 0), 0),
-    }
-  }
-  return usageStatsMap.value[selectedKeyId.value] || null
-})
-
-const quotaDisplay = computed(() => {
-  if (selectedKeyId.value === '') return '-'
-  const quota = Number(selectedKey.value?.quota ?? 0)
-  return quota === 0 ? '无限限制额度' : formatAmount(quota)
-})
-
-const selectedKeyStatus = computed(() => {
-  if (selectedKeyId.value === '') return { type: 'unknown', label: '全部' }
-  if (!selectedKey.value) return { type: 'unknown', label: '未选择' }
-  const status = String(selectedKey.value?.status || '').toLowerCase()
-  if (status === 'active') return { type: 'active', label: '启用' }
-  if (status === 'inactive') return { type: 'inactive', label: '禁用' }
-  return { type: 'unknown', label: status || '未知' }
-})
+const keyQuota = computed(() => ({
+  amount: Number(selectedKey.value?.amount || 0),
+  used: Number(selectedKey.value?.used || 0),
+}))
 
 const summaryCards = computed(() => [
   {
-    label: '今日消费',
-    value: usageLoading.value ? '加载中...' : `$${formatAmount(selectedUsage.value?.today_actual_cost)}`,
+    label: '可用额度',
+    value: keysLoading.value ? '加载中...' : `$${formatAmount(keyQuota.value.amount)}`,
   },
   {
-    label: '总消费',
-    value: usageLoading.value ? '加载中...' : `$${formatAmount(selectedUsage.value?.total_actual_cost)}`,
+    label: '已用额度',
+    value: keysLoading.value ? '加载中...' : `$${formatAmount(keyQuota.value.used)}`,
   },
-  { label: '最大额度', value: quotaDisplay.value },
 ])
 
 const costTooltipStyle = computed(() => ({
@@ -360,309 +184,130 @@ const hideTokenTooltip = () => {
   activeTokenRow.value = null
 }
 
-const buildKeyUpdateEndpoint = (keyId) => `${String(keysEndpoint).replace(/\/$/, '')}/${keyId}`
-
-const updateKeyStatus = async (keyId, status) => {
-  const response = await fetch(buildKeyUpdateEndpoint(keyId), {
-    method: 'PUT',
-    headers: {
-      Accept: 'application/json',
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${token}`,
-    },
-    body: JSON.stringify({ status }),
-  })
-
-  if (!response.ok) {
-    throw new Error(`更新 Key ${keyId} 状态为 ${status} 失败，状态码 ${response.status}`)
-  }
-}
-
-const syncKeyStatusByQuota = async (keyItems, usageStats) => {
-  const existedKeyIds = new Set(keyItems.map((item) => String(item?.id || '')).filter(Boolean))
-  for (const keyId of overLimitStateByKeyId.keys()) {
-    if (!existedKeyIds.has(keyId)) overLimitStateByKeyId.delete(keyId)
-  }
-
-  const tasks = keyItems
-    .map((item) => {
-      const keyId = String(item.id || '')
-      if (!keyId) return null
-
-      const quota = Number(item?.quota ?? 0)
-      const totalCost = Number(usageStats?.[keyId]?.total_actual_cost ?? 0)
-      const status = String(item?.status || '').toLowerCase()
-      const isOverLimit = quota > 0 && totalCost >= quota
-      const wasOverLimit = overLimitStateByKeyId.get(keyId) || false
-      overLimitStateByKeyId.set(keyId, isOverLimit)
-
-      if (statusSyncPendingKeyIds.has(keyId)) return null
-      if (isOverLimit && status !== 'inactive') {
-        return { item, keyId, nextStatus: 'inactive' }
-      }
-      if (!isOverLimit && wasOverLimit && status === 'inactive') {
-        return { item, keyId, nextStatus: 'active' }
-      }
-      return null
-    })
-    .filter(Boolean)
-
-  if (!tasks.length) return
-
-  const results = await Promise.allSettled(
-    tasks.map(async ({ item, keyId, nextStatus }) => {
-      statusSyncPendingKeyIds.add(keyId)
-      try {
-        await updateKeyStatus(keyId, nextStatus)
-        item.status = nextStatus
-      } finally {
-        statusSyncPendingKeyIds.delete(keyId)
-      }
-    }),
-  )
-
-  const failedMessages = results
-    .filter((result) => result.status === 'rejected')
-    .map((result) => result.reason?.message || '自动同步状态失败')
-
-  if (failedMessages.length) {
-    errorMessage.value = failedMessages.join('；')
-  }
-}
-
-const fetchUsageStats = async (apiKeyIds) => {
-  if (!apiKeyIds.length) {
-    usageStatsMap.value = {}
-    return {}
-  }
-
-  usageLoading.value = true
-  try {
-    const response = await fetch(usageStatsEndpoint, {
-      method: 'POST',
-      headers: {
-        Accept: 'application/json',
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${token}`,
-      },
-      body: JSON.stringify({ api_key_ids: apiKeyIds }),
-    })
-
-    if (!response.ok) throw new Error(`统计请求失败，状态码 ${response.status}`)
-
-    const payload = await response.json()
-    const stats = payload?.data?.stats
-    if (payload?.code !== 0 || !stats || typeof stats !== 'object') {
-      throw new Error(payload?.message || '统计接口返回格式不符合预期')
-    }
-
-    usageStatsMap.value = stats
-    return stats
-  } catch (error) {
-    errorMessage.value = error instanceof Error ? error.message : '统计请求失败'
-    return null
-  } finally {
-    usageLoading.value = false
-  }
-}
-
-const fetchChartAllPages = async (apiKeyId) => {
-  chartLoading.value = true
-  chartItems.value = []
-
-  try {
-    const now = new Date()
-    const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000)
-    const startDate = getShanghaiDate(sevenDaysAgo)
-    const endDate = getShanghaiDate(now)
-
-    const buildQuery = (page) => {
-      const params = {
-        page: String(page),
-        page_size: String(chartPageSize),
-        start_date: startDate,
-        end_date: endDate,
-        timezone,
-      }
-      if (apiKeyId) params.api_key_id = String(apiKeyId)
-      return new URLSearchParams(params).toString()
-    }
-
-    const fetchPage = (page) =>
-      fetch(`${usageDetailsEndpoint}?${buildQuery(page)}`, {
-        headers: { Accept: 'application/json', Authorization: `Bearer ${token}` },
-      }).then((r) => r.json())
-
-    const first = await fetchPage(1)
-    if (first?.code !== 0 || !Array.isArray(first?.data?.items)) return
-
-    const total = Number(first?.data?.total || 0)
-    const totalPages = Math.ceil(total / chartPageSize)
-    let allItems = [...first.data.items]
-
-    if (totalPages > 1) {
-      const rest = await Promise.all(
-        Array.from({ length: totalPages - 1 }, (_, i) => fetchPage(i + 2)),
-      )
-      for (const payload of rest) {
-        if (payload?.code === 0 && Array.isArray(payload?.data?.items)) {
-          allItems = allItems.concat(payload.data.items)
-        }
-      }
-    }
-
-    chartItems.value = allItems
-  } catch {
-    // 图表拉取失败不影响主界面
-  } finally {
-    chartLoading.value = false
-  }
-}
-
-const fetchUsageDetails = async (apiKeyId, page = 1) => {
-  const isLoadMore = page > 1
-
-  if (!isLoadMore) {
-    detailsCurrentPage.value = 1
-    usageItems.value = []
-    usageTotal.value = 0
-    detailsLoading.value = true
-    detailsErrorMessage.value = ''
-    usageEndDate.value = getShanghaiDate()
-  } else {
-    detailsLoadingMore.value = true
-  }
-
-  try {
-    const params = {
-      page: String(page),
-      page_size: fixedDetailsPageSize,
-      start_date: fixedStartDate,
-      end_date: usageEndDate.value || getShanghaiDate(),
-      timezone,
-    }
-    if (apiKeyId) params.api_key_id = String(apiKeyId)
-
-    const response = await fetch(`${usageDetailsEndpoint}?${new URLSearchParams(params).toString()}`, {
-      method: 'GET',
-      headers: {
-        Accept: 'application/json',
-        Authorization: `Bearer ${token}`,
-      },
-    })
-
-    if (!response.ok) throw new Error(`明细请求失败，状态码 ${response.status}`)
-
-    const payload = await response.json()
-    const fetchedItems = payload?.data?.items
-    if (payload?.code !== 0 || !Array.isArray(fetchedItems)) {
-      throw new Error(payload?.message || '明细接口返回格式不符合预期')
-    }
-
-    if (isLoadMore) {
-      usageItems.value = [...usageItems.value, ...fetchedItems]
-    } else {
-      usageItems.value = fetchedItems
-    }
-    usageTotal.value = Number(payload?.data?.total || 0)
-    detailsCurrentPage.value = page
-  } catch (error) {
-    detailsErrorMessage.value = error instanceof Error ? error.message : '明细请求失败'
-  } finally {
-    if (isLoadMore) {
-      detailsLoadingMore.value = false
-    } else {
-      detailsLoading.value = false
-    }
-  }
-}
-
 const handleTableScroll = () => {
   if (detailsLoading.value || detailsLoadingMore.value) return
   if (usageItems.value.length >= usageTotal.value) return
   const el = tableWrap.value
   if (!el) return
   if (el.scrollTop + el.clientHeight >= el.scrollHeight - 120) {
-    fetchUsageDetails(selectedKeyId.value, detailsCurrentPage.value + 1)
+    fetchData(detailsCurrentPage.value + 1)
   }
 }
 
-const fetchKeyOptions = async () => {
-  loading.value = true
-  errorMessage.value = ''
+const fetchKeys = async () => {
+  keysLoading.value = true
+  try {
+    const params = new URLSearchParams({
+      page: '1',
+      size: '20',
+      'sl[name]': 'true',
+      'sl[token]': 'true',
+      'sl[note]': 'true',
+    })
+    const response = await fetch(`${keysEndpoint}?${params}`, {
+      headers: { Accept: 'application/json', Authorization: token },
+    })
+    if (!response.ok) throw new Error(`密钥请求失败，状态码 ${response.status}`)
+    const payload = await response.json()
+    if (payload?.code !== 0 || !Array.isArray(payload?.data?.records)) {
+      throw new Error(payload?.msg || '密钥接口返回格式不符合预期')
+    }
+    const yunwuKeys = payload.data.records.filter((k) => k.name?.includes('云雾'))
+    keys.value = yunwuKeys
+    if (!selectedKeyId.value && yunwuKeys.length) {
+      selectedKeyId.value = String(yunwuKeys[0].id)
+    }
+  } catch (error) {
+    errorMessage.value = error instanceof Error ? error.message : '密钥请求失败'
+  } finally {
+    keysLoading.value = false
+  }
+}
+
+const handleKeyChange = () => {
+  fetchData()
+}
+
+const fetchData = async (page = 1) => {
+  const isLoadMore = page > 1
+
+  if (!isLoadMore) {
+    detailsCurrentPage.value = 1
+    usageItems.value = []
+    usageTotal.value = 0
+    loading.value = true
+    detailsLoading.value = true
+    errorMessage.value = ''
+    detailsErrorMessage.value = ''
+  } else {
+    detailsLoadingMore.value = true
+  }
 
   try {
-    const query = new URLSearchParams({
-      page: '1',
-      page_size: '100',
-      timezone,
+    const params = new URLSearchParams({
+      page: String(page),
+      size: '100',
+      'search[type]': '0',
+      'sl[ip]': 'true',
+      'sl[model]': 'true',
+      'sl[reqPath]': 'true',
+      'sl[detail]': 'true',
     })
+    if (selectedKeyId.value) params.set('search[keyId]', selectedKeyId.value)
 
-    const response = await fetch(`${keysEndpoint}?${query.toString()}`, {
-      method: 'GET',
+    const response = await fetch(`${logEndpoint}?${params}`, {
       headers: {
         Accept: 'application/json',
-        Authorization: `Bearer ${token}`,
+        Authorization: token,
       },
     })
 
     if (!response.ok) throw new Error(`请求失败，状态码 ${response.status}`)
 
     const payload = await response.json()
-    const fetchedItems = payload?.data?.items
-    if (payload?.code !== 0 || !Array.isArray(fetchedItems)) {
-      throw new Error(payload?.message || '接口返回格式不符合预期')
+    if (payload?.code !== 0 || !Array.isArray(payload?.data?.records)) {
+      throw new Error(payload?.msg || '接口返回格式不符合预期')
     }
 
-    items.value = fetchedItems
-    const previousSelectedKeyId = selectedKeyId.value
-    const hasPreviousKey =
-      previousSelectedKeyId === '' ||
-      fetchedItems.some((item) => String(item.id) === previousSelectedKeyId)
-    selectedKeyId.value = hasPreviousKey ? previousSelectedKeyId : ''
-
-    const apiKeyIds = fetchedItems.map((item) => Number(item.id)).filter((id) => Number.isFinite(id))
-    const usageStats = await fetchUsageStats(apiKeyIds)
-    if (usageStats) {
-      await syncKeyStatusByQuota(fetchedItems, usageStats)
+    if (isLoadMore) {
+      usageItems.value = [...usageItems.value, ...payload.data.records]
+    } else {
+      usageItems.value = payload.data.records
     }
-    await fetchUsageDetails(selectedKeyId.value)
-    fetchChartAllPages(selectedKeyId.value)
+    usageTotal.value = Number(payload.data.total || 0)
+    detailsCurrentPage.value = page
   } catch (error) {
-    errorMessage.value = error instanceof Error ? error.message : '请求失败'
+    const msg = error instanceof Error ? error.message : '请求失败'
+    if (isLoadMore) {
+      detailsErrorMessage.value = msg
+    } else {
+      errorMessage.value = msg
+    }
   } finally {
-    loading.value = false
+    if (isLoadMore) {
+      detailsLoadingMore.value = false
+    } else {
+      loading.value = false
+      detailsLoading.value = false
+    }
   }
 }
 
-const handleKeyChange = () => {
-  fetchUsageDetails(selectedKeyId.value)
-  fetchChartAllPages(selectedKeyId.value)
-}
+let autoRefreshTimer = null
 
-onMounted(() => {
-  fetchKeyOptions()
-  autoRefreshTimer = setInterval(() => {
-    if (loading.value) return
-    fetchKeyOptions()
-  }, autoRefreshIntervalMs)
-  window.addEventListener('resize', handleChartResize)
+onMounted(async () => {
+  await fetchKeys()
+  fetchData()
+  autoRefreshTimer = setInterval(async () => {
+    await fetchKeys()
+    fetchData()
+  }, 30 * 1000)
 })
 
-const handleChartResize = () => {
-  chartInstance?.resize()
-}
-
 onBeforeUnmount(() => {
-  if (autoRefreshTimer) {
-    clearInterval(autoRefreshTimer)
-    autoRefreshTimer = null
-  }
+  clearInterval(autoRefreshTimer)
   clearHideTooltipTimer()
   clearTokenHideTooltipTimer()
-  window.removeEventListener('resize', handleChartResize)
-  chartInstance?.dispose()
-  chartInstance = null
 })
 </script>
 
@@ -673,22 +318,11 @@ onBeforeUnmount(() => {
         <h1>调用明细</h1>
       </div>
       <div class="filters">
-        <label for="key-select">API 密钥</label>
-        <select
-          id="key-select"
-          v-model="selectedKeyId"
-          :disabled="loading"
-          @change="handleKeyChange"
-        >
-          <option value="">{{ loading ? '加载中...' : '全部' }}</option>
-          <option v-for="option in nameOptions" :key="option.id" :value="option.id">
-            {{ option.name }}
-          </option>
+        <label for="key-select">密钥</label>
+        <select id="key-select" v-model="selectedKeyId" :disabled="keysLoading" @change="handleKeyChange">
+          <option v-for="k in keys" :key="k.id" :value="String(k.id)">{{ k.name }}</option>
         </select>
-        <button type="button" :disabled="loading" @click="fetchKeyOptions">刷新</button>
-        <div :class="['key-status', `key-status--${selectedKeyStatus.type}`]">
-          当前状态：{{ selectedKeyStatus.label }}
-        </div>
+        <button type="button" :disabled="loading || keysLoading" @click="fetchKeys(); fetchData()">刷新</button>
       </div>
     </header>
 
@@ -701,27 +335,6 @@ onBeforeUnmount(() => {
       </div>
     </section>
 
-    <section class="chart-card">
-      <div class="chart-header">
-        <span class="chart-title">消费趋势</span>
-        <div class="chart-tabs">
-          <button
-            type="button"
-            :class="['chart-tab', { active: chartGranularity === 'day' }]"
-            @click="chartGranularity = 'day'"
-          >按天</button>
-          <button
-            type="button"
-            :class="['chart-tab', { active: chartGranularity === 'hour' }]"
-            @click="chartGranularity = 'hour'"
-          >按小时</button>
-        </div>
-      </div>
-      <div v-if="chartLoading" class="chart-placeholder">图表加载中...</div>
-      <div v-else-if="!chartItems.length" class="chart-placeholder">暂无数据</div>
-      <div v-else ref="chartContainer" class="chart-body"></div>
-    </section>
-
     <section class="table-card">
       <div class="table-title">
         <span>明细记录</span>
@@ -732,16 +345,16 @@ onBeforeUnmount(() => {
         <table class="pc-table">
           <thead>
             <tr>
-              <th>API 密钥</th>
+              <th>KEY 名称</th>
               <th>时间</th>
               <th>模型</th>
-              <th>推理强度</th>
+              <th>渠道</th>
               <th>类型</th>
               <th>TOKEN</th>
               <th>费用</th>
               <th>首 TOKEN</th>
               <th>耗时</th>
-              <th>USER-AGENT</th>
+              <th>IP</th>
             </tr>
           </thead>
           <tbody>
@@ -752,12 +365,12 @@ onBeforeUnmount(() => {
               <td colspan="10" class="table-msg">暂无明细</td>
             </tr>
             <tr v-for="row in usageItems" :key="row.id">
-              <td>{{ row.api_key?.name || selectedKey?.name || '-' }}</td>
-              <td>{{ formatDateTime(row.created_at) }}</td>
+              <td>{{ row.kName || '-' }}</td>
+              <td>{{ formatDateTime(row.created) }}</td>
               <td>{{ row.model || '-' }}</td>
-              <td>{{ row.reasoning_effort || '-' }}</td>
+              <td>{{ row.cgName || '-' }}</td>
               <td>
-                <span class="type-tag">{{ formatRequestType(row.request_type) }}</span>
+                <span class="type-tag">{{ formatRequestType(row.stream) }}</span>
               </td>
               <td>
                 <div
@@ -770,12 +383,12 @@ onBeforeUnmount(() => {
                 >
                   <div>
                     <div class="token-line">
-                      <span class="token-down">↓ {{ row.input_tokens || 0 }}</span>
-                      <span class="token-up">↑ {{ row.output_tokens || 0 }}</span>
+                      <span class="token-down">↓ {{ row.inputTokens || 0 }}</span>
+                      <span class="token-up">↑ {{ row.outputTokens || 0 }}</span>
                     </div>
                     <div class="token-line token-sub">
-                      <span class="token-read">⟲ {{ formatTokenCount(row.cache_read_tokens) }}</span>
-                      <span class="token-write">✎ {{ formatTokenCount(row.cache_creation_tokens) }}</span>
+                      <span class="token-read">⟲ {{ formatTokenCount(row.inputCacheTokens) }}</span>
+                      <span class="token-write">✎ {{ formatTokenCount(row.createInputCacheTokens) }}</span>
                     </div>
                   </div>
                   <span class="token-info" aria-hidden="true">i</span>
@@ -790,13 +403,13 @@ onBeforeUnmount(() => {
                   @focusin="showCostTooltip($event, row)"
                   @focusout="scheduleHideCostTooltip"
                 >
-                  <span class="cost">{{ formatUsd(row.actual_cost) }}</span>
+                  <span class="cost">{{ formatUsd(row.changeAmount) }}</span>
                   <span class="cost-info" aria-hidden="true">i</span>
                 </div>
               </td>
-              <td>{{ formatSeconds(row.first_token_ms) }}</td>
-              <td>{{ formatSeconds(row.duration_ms) }}</td>
-              <td>{{ row.user_agent || '-' }}</td>
+              <td>{{ formatSeconds(row.preMs) }}</td>
+              <td>{{ formatSeconds(row.totalMs) }}</td>
+              <td>{{ row.ip || '-' }}</td>
             </tr>
           </tbody>
         </table>
@@ -806,30 +419,30 @@ onBeforeUnmount(() => {
           <p v-else-if="!detailsLoading && !usageItems.length" class="table-msg">暂无明细</p>
           <div v-for="row in usageItems" :key="'m-' + row.id" class="mobile-card">
             <div class="mobile-card-head">
-              <span class="mobile-card-name">{{ row.api_key?.name || selectedKey?.name || '-' }}</span>
+              <span class="mobile-card-name">{{ row.kName || '-' }}</span>
               <span class="mobile-card-model">{{ row.model || '-' }}</span>
             </div>
             <div class="mobile-card-head">
-              <span class="mobile-card-time">{{ formatDateTime(row.created_at) }}</span>
-              <span class="type-tag">{{ formatRequestType(row.request_type) }}</span>
+              <span class="mobile-card-time">{{ formatDateTime(row.created) }}</span>
+              <span class="type-tag">{{ formatRequestType(row.stream) }}</span>
             </div>
             <div class="mobile-card-tokens">
-              <span class="token-down">↓ {{ row.input_tokens || 0 }}</span>
-              <span class="token-up">↑ {{ row.output_tokens || 0 }}</span>
-              <span class="token-read">⟲ {{ formatTokenCount(row.cache_read_tokens) }}</span>
-              <span class="token-write">✎ {{ formatTokenCount(row.cache_creation_tokens) }}</span>
+              <span class="token-down">↓ {{ row.inputTokens || 0 }}</span>
+              <span class="token-up">↑ {{ row.outputTokens || 0 }}</span>
+              <span class="token-read">⟲ {{ formatTokenCount(row.inputCacheTokens) }}</span>
+              <span class="token-write">✎ {{ formatTokenCount(row.createInputCacheTokens) }}</span>
             </div>
             <div class="mobile-card-row">
               <span class="mobile-card-label">费用</span>
-              <span class="cost">{{ formatUsd(row.actual_cost) }}</span>
-              <span class="mobile-card-label">推理</span>
-              <span>{{ row.reasoning_effort || '-' }}</span>
+              <span class="cost">{{ formatUsd(row.changeAmount) }}</span>
+              <span class="mobile-card-label">渠道</span>
+              <span>{{ row.cgName || '-' }}</span>
             </div>
             <div class="mobile-card-row">
               <span class="mobile-card-label">首Token</span>
-              <span>{{ formatSeconds(row.first_token_ms) }}</span>
+              <span>{{ formatSeconds(row.preMs) }}</span>
               <span class="mobile-card-label">耗时</span>
-              <span>{{ formatSeconds(row.duration_ms) }}</span>
+              <span>{{ formatSeconds(row.totalMs) }}</span>
             </div>
           </div>
         </div>
@@ -851,31 +464,31 @@ onBeforeUnmount(() => {
         <div class="tooltip-title">成本明细</div>
         <div class="tooltip-row">
           <span>输入成本</span>
-          <span>{{ formatUsd(activeCostRow.input_cost) }}</span>
+          <span>{{ formatUsd(activeCostRow.info?.useInPrice) }}</span>
         </div>
         <div class="tooltip-row">
           <span>输出成本</span>
-          <span>{{ formatUsd(activeCostRow.output_cost) }}</span>
+          <span>{{ formatUsd(activeCostRow.info?.useOutPrice) }}</span>
         </div>
         <div class="tooltip-row">
           <span>缓存创建成本</span>
-          <span>{{ formatUsd(activeCostRow.cache_creation_cost) }}</span>
+          <span>{{ formatUsd(activeCostRow.info?.useCacheWritePrice) }}</span>
         </div>
         <div class="tooltip-row">
           <span>缓存读取成本</span>
-          <span>{{ formatUsd(activeCostRow.cache_read_cost) }}</span>
+          <span>{{ formatUsd(activeCostRow.info?.useCacheReadPrice) }}</span>
         </div>
         <div class="tooltip-row">
           <span>倍率</span>
-          <span>{{ Number(activeCostRow.rate_multiplier || 1).toFixed(2) }}x</span>
+          <span>{{ Number(activeCostRow.info?.ratio || 1).toFixed(2) }}x</span>
         </div>
         <div class="tooltip-row">
           <span>原始</span>
-          <span>{{ formatUsd(activeCostRow.total_cost) }}</span>
+          <span>{{ formatUsd(activeCostRow.info?.breakdown?.total) }}</span>
         </div>
         <div class="tooltip-row total">
           <span>计费</span>
-          <span>{{ formatUsd(activeCostRow.actual_cost) }}</span>
+          <span>{{ formatUsd(activeCostRow.changeAmount) }}</span>
         </div>
       </div>
     </Teleport>
@@ -891,27 +504,27 @@ onBeforeUnmount(() => {
         <div class="tooltip-title">Token 明细</div>
         <div class="tooltip-row">
           <span>输入 Token</span>
-          <span>{{ Number(activeTokenRow.input_tokens || 0) }}</span>
+          <span>{{ Number(activeTokenRow.inputTokens || 0) }}</span>
         </div>
         <div class="tooltip-row">
           <span>输出 Token</span>
-          <span>{{ Number(activeTokenRow.output_tokens || 0) }}</span>
+          <span>{{ Number(activeTokenRow.outputTokens || 0) }}</span>
         </div>
         <div class="tooltip-row">
           <span>缓存创建 Token</span>
-          <span>{{ Number(activeTokenRow.cache_creation_tokens || 0) }}</span>
+          <span>{{ Number(activeTokenRow.createInputCacheTokens || 0) }}</span>
         </div>
         <div class="tooltip-row">
           <span>缓存读取 Token</span>
-          <span>{{ Number(activeTokenRow.cache_read_tokens || 0) }}</span>
+          <span>{{ Number(activeTokenRow.inputCacheTokens || 0) }}</span>
         </div>
         <div class="tooltip-row total token-total">
           <span>总 Token</span>
           <span>{{
-            Number(activeTokenRow.input_tokens || 0) +
-            Number(activeTokenRow.output_tokens || 0) +
-            Number(activeTokenRow.cache_creation_tokens || 0) +
-            Number(activeTokenRow.cache_read_tokens || 0)
+            Number(activeTokenRow.inputTokens || 0) +
+            Number(activeTokenRow.outputTokens || 0) +
+            Number(activeTokenRow.createInputCacheTokens || 0) +
+            Number(activeTokenRow.inputCacheTokens || 0)
           }}</span>
         </div>
       </div>
@@ -951,34 +564,6 @@ h1 {
   gap: 10px;
 }
 
-.key-status {
-  display: inline-flex;
-  align-items: center;
-  height: 38px;
-  padding: 0 12px;
-  border-radius: 8px;
-  font-size: 13px;
-  font-weight: 600;
-  border: 1px solid transparent;
-}
-
-.key-status--active {
-  color: #047857;
-  background: #ecfdf5;
-  border-color: #a7f3d0;
-}
-
-.key-status--inactive {
-  color: #b91c1c;
-  background: #fef2f2;
-  border-color: #fecaca;
-}
-
-.key-status--unknown {
-  color: #475569;
-  background: #f8fafc;
-  border-color: #cbd5e1;
-}
 
 label {
   color: #475569;
@@ -1019,7 +604,7 @@ button:disabled {
 
 .summary {
   display: grid;
-  grid-template-columns: repeat(3, minmax(220px, 260px));
+  grid-template-columns: repeat(2, minmax(220px, 260px));
   justify-content: flex-start;
   gap: 10px;
   margin: 10px 0 10px;
@@ -1048,63 +633,6 @@ button:disabled {
   line-height: 1.15;
 }
 
-.chart-card {
-  background: #fff;
-  border: 1px solid #d9e0ea;
-  border-radius: 16px;
-  overflow: hidden;
-  margin-bottom: 10px;
-  flex-shrink: 0;
-}
-
-.chart-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 12px 16px;
-  border-bottom: 1px solid #e6ebf2;
-}
-
-.chart-title {
-  color: #475569;
-  font-size: 14px;
-}
-
-.chart-tabs {
-  display: flex;
-  gap: 4px;
-}
-
-.chart-tab {
-  height: 28px;
-  padding: 0 12px;
-  border-radius: 6px;
-  font-size: 13px;
-  background: #f1f5f9;
-  color: #64748b;
-  border: 1px solid transparent;
-  cursor: pointer;
-
-  &.active {
-    background: #dbeafe;
-    color: #1d4ed8;
-    border-color: #bfdbfe;
-  }
-}
-
-.chart-body {
-  width: 100%;
-  height: 200px;
-}
-
-.chart-placeholder {
-  height: 100px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: #94a3b8;
-  font-size: 14px;
-}
 
 .table-card {
   background: #fff;
